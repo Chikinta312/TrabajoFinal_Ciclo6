@@ -1,0 +1,175 @@
+//Escaner 3D con sensor Infrarrojo. Trabajo final Curso Integrador 1: Diseño Electronico
+
+#include <SPI.h>
+#include <SD.h>
+
+// Variables Editables
+int scan_amount = 40;                   // Cantidad de escaneos para cada punto. El resultado es la media. Esto aumentaría el retraso para cada escaneo.
+String file = "scan_001.txt";           // Nombre del archivo guardado en la tarjeta SD
+int z_axis_height = 12; // en cm         // Altura máxima del archivo escaneado
+int step_delay = 3000; // en us          // Retardo para cada paso del motor paso a paso en microsegundos
+float z_layer_height = 0.5; // en mm     // Altura de capa. La cantidad de mm para cada capa.
+int lead_screw_rotations_per_cm = 5;    // Cuántas rotaciones necesita el tornillo sin fin para hacer 1 cm.
+int steps_per_rotation_for_motor = 200; // Pasos que el motor necesita para una rotación completa.
+int distance_to_center = 8.5;             // En cm. Distancia desde el sensor hasta el centro del plato giratorio en cm
+
+// Entradas/Salidas
+int button = 2;
+int limit_switch = 10;
+// Pines del controlador del plato giratorio
+int dir_r = 7;
+int step_r = 8;
+int enable_r = 9;
+// Pines del controlador del eje Z
+int dir_z = 3;
+int step_z = 5;
+int enable_z = 6;
+// Puedes cambiar el número del pin que estás utilizando
+int ir_sensor_pin = A3; 
+
+// Variables
+File file_values;           // Utilizado para el módulo de tarjeta SD
+int scan = 0;               // Activar/desactivar el escaneo
+int scan_changed = 0;       // El proceso de escaneo ha cambiado
+float distance = 0;         // Distancia medida
+float angle = 0;            // Ángulo de rotación para cada bucle (0º-360º)
+float x = 0;                // Coordenadas X, Y y Z
+float y = 0;
+float z = 0;
+int z_loop = 0;             // Variable utilizada para la rotación del motor del eje Z
+int r_loop = 0;             // Variable utilizada para la rotación del motor del plato giratorio
+float measured_analog = 0;  // Lectura analógica del sensor de distancia
+float analog = 0;           // Media analógica
+float RADIANS = 0.0;        // Ángulo en radianes. Calculamos este valor más adelante en el bucle de configuración
+int steps_z_height = 0;     // Variable utilizada para la cantidad de pasos en el eje Z
+int homed = 0;
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(ir_sensor_pin, INPUT);
+  pinMode(limit_switch, INPUT);
+  pinMode(button, INPUT);
+  analogReference(INTERNAL);  
+  SD.begin(4);
+  pinMode(dir_z, OUTPUT);
+  pinMode(step_z, OUTPUT);
+  pinMode(enable_z, OUTPUT);
+  pinMode(dir_r, OUTPUT);
+  pinMode(step_r, OUTPUT);
+  pinMode(enable_r, OUTPUT);
+  digitalWrite(enable_z, HIGH); // deshabilitar el controlador del eje Z
+  digitalWrite(enable_r, HIGH); // deshabilitar el controlador del plato giratorio
+
+  // Calcular variables
+  RADIANS = (3.141592 / 180.0) * (360 / steps_per_rotation_for_motor);
+  steps_z_height = (z_layer_height * steps_per_rotation_for_motor * lead_screw_rotations_per_cm) / 10;
+}
+
+void loop() {
+  // Espera hasta que se presione el botón
+  if (digitalRead(button)) {
+    if (scan == 1 && scan_changed == 0) {
+      scan = 0;
+      delay(5000);
+      scan_changed = 1;
+    }
+    if (scan == 0 && scan_changed == 0) {
+      scan = 1;
+      delay(5000);
+      scan_changed = 1;
+    }
+    scan_changed = 0;
+  }
+
+  // Si el proceso de escaneo está ACTIVO
+  if (scan == 1) {
+    // Detenemos cuando alcanzamos la altura máxima
+    if (z < z_axis_height) {
+      for (int loop_cont = 0; loop_cont < steps_per_rotation_for_motor; loop_cont++) {
+        getDistance();
+        digitalWrite(enable_r, LOW);   // habilitar el controlador del plato giratorio
+        digitalWrite(dir_r, HIGH);      // el plato giratorio gira a la derecha
+        digitalWrite(step_r, HIGH);    // da un paso
+        delayMicroseconds(step_delay);
+        digitalWrite(step_r, LOW);
+        delayMicroseconds(step_delay);
+        angle = angle + RADIANS;      // Aumentar el ángulo por una unidad más
+        write_to_SD(x, y, z);           // Escribir las coordenadas x, y, z en el archivo de la tarjeta SD
+
+        // Descomenta esto para depuración en serie//
+        Serial.print(loop_cont);     Serial.print("   "); 
+        Serial.print(angle);     Serial.print("   "); 
+        Serial.print(distance);     Serial.print("   "); 
+        Serial.print(x);     Serial.print("   "); 
+        Serial.print(y);     Serial.print("   "); 
+        Serial.print(z);     Serial.println("   ");
+      }
+      angle = 0;  // Reiniciar el valor del ángulo para la próxima rotación
+
+      /* Mi varilla roscada necesita 5 rotaciones completas para 1 cm. Una rotación completa son 200 pasos en mi caso.
+      Necesitamos 1000 para 1 cm. Entonces, necesitamos 50 para 0.5 mm. La cantidad se calcula automáticamente.
+      Simplemente cambia las variables al principio si lo deseas */
+      
+      while (z_loop < steps_z_height) {      
+        digitalWrite(enable_z, LOW);     // habilitar el controlador del eje Z
+        digitalWrite(dir_z, LOW);        // el eje Z gira a la derecha
+        digitalWrite(step_z, HIGH);      // el eje Z da un paso
+        delayMicroseconds(step_delay);
+        digitalWrite(step_z, LOW);
+        delayMicroseconds(step_delay);
+        z_loop = z_loop + 1;              // Aumentar el bucle en 1
+      }
+      z = z + z_layer_height;         // Aumentar la altura Z realizada en 1 unidad
+      z_loop = 0;                     // Reiniciar la variable de rotación del eje Z
+
+    } // Fin del if z_height
+
+    // Hemos terminado el escaneo, detenemos los controladores
+    else {
+      digitalWrite(enable_z, HIGH);
+      digitalWrite(enable_r, HIGH);
+    }
+
+  } // Fin de if scan
+} // Fin de la función loop
+
+// Función que obtiene la distancia del sensor
+double getDistance() {
+  for (int aa = 0; aa < scan_amount; aa++) 
+  {
+    measured_analog = analogRead(ir_sensor_pin);
+    delay(2);
+    analog = analog + measured_analog;    
+  }
+  distance = analog / scan_amount;        // Obtener la media. Dividir el escaneo por la cantidad de escaneos.
+  analog = 0;  // Restablecer el valor total de la lectura analógica
+  measured_analog = 0;  // Restablecer el valor de la lectura analógica
+  distance = mapFloat(distance, 0.0, 1023.0, 0.0, 3.3); // Convertir la lectura del pin analógico a voltaje
+  distance = -5.40274 * pow(distance, 3) + 28.4823 * pow(distance, 2) - 49.7115 * distance + 31.3444; // Desde la hoja de datos
+  distance = distance_to_center - distance;  // la distancia d = distancia desde el sensor hasta el centro - distancia medida
+  y =  (sin(angle) * distance);  
+  x =  (cos(angle) * distance);  
+     
+  //Para depuración//
+  Serial.print(distance); Serial.print("   "); 
+  Serial.print(x); Serial.print("   "); 
+  Serial.print(y); Serial.print("   "); 
+  Serial.print(z); Serial.print("   "); 
+  Serial.print(angle); Serial.println("   ");
+}
+
+// Función que mapea el valor en formato flotante
+float mapFloat(float fval, float val_in_min, float val_in_max, float val_out_min, float val_out_max) {
+  return (fval - val_in_min) * (val_out_max - val_out_min) / (val_in_max - val_in_min) + val_out_min;
+}
+
+// Función que escribe el valor en la tarjeta SD
+void write_to_SD(float SDx, float SDy, float SDz) {
+  file_values = SD.open(file, FILE_WRITE);
+  if (file_values) {
+    file_values.print(SDx); file_values.print(",");
+    file_values.print(SDy); file_values.print(",");
+    file_values.println(SDz);
+    file_values.close(); 
+  }  
+}
